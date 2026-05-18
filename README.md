@@ -167,6 +167,7 @@ See [./samples/local-svf-to-gltf.sh](./samples/local-svf-to-gltf.sh) or
 
 ## Development
 
+- use Node.js 24 (`nvm use` will pick it up from `.nvmrc`)
 - clone the repository
 - install dependencies: `yarn install`
 - build the library (transpile TypeScript): `yarn run build`
