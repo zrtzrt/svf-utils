@@ -2,7 +2,6 @@ import * as path from 'path';
 import * as fse from 'fs-extra';
 import Zip from 'adm-zip';
 import axios from 'axios';
-import { isNullOrUndefined } from 'util';
 import { SdkManagerBuilder } from '@aps_sdk/autodesk-sdkmanager';
 import { ManifestDerivativesChildren, ModelDerivativeClient } from '@aps_sdk/model-derivative';
 import { Scopes } from '@aps_sdk/authentication';
@@ -360,8 +359,8 @@ export class Reader {
 
     protected findAsset(query: { type?: SVF.AssetType, uri?: string }): SVF.ISvfManifestAsset | undefined {
         return this.svf.manifest.assets.find(asset => {
-            return (isNullOrUndefined(query.type) || asset.type === query.type)
-                && (isNullOrUndefined(query.uri) || asset.URI === query.uri);
+            return (query.type == null || asset.type === query.type)
+                && (query.uri == null || asset.URI === query.uri);
         });
     }
 
