@@ -115,6 +115,32 @@ for (const mesh of parseMeshes(buffer)) {
 
 > For additional examples, see the [samples](./samples) subfolder.
 
+### Merging GLB output
+
+The default `GltfWriter` emits one glTF mesh per SVF fragment. On large models that means a very
+large output - a model with hundreds of thousands of fragments easily reaches several gigabytes -
+and, at render time, one draw call per fragment.
+
+`MergingGLTFWriter` takes the same `IScene` as `GltfWriter`, but produces a single, much smaller GLB
+instead. It:
+
+1. bakes node transforms into the vertex positions and normals (no per-node transform overhead)
+2. merges fragments that share a material into a single mesh (one draw call per material)
+3. writes one self-contained `.glb`, with no sibling `.bin` file
+
+```js
+const { MergingGLTFWriter } = require('svf-utils');
+
+const scene = await reader.read();
+const writer = new MergingGLTFWriter({
+    center: true,     // move the model to the origin (default: true)
+    log: console.log  // optional progress callback
+});
+await writer.write(scene, 'output.glb');
+```
+
+Because the output is a plain GLB, it can be passed on to any external post-processing tool.
+
 ### Customization
 
 You can customize the translation by sub-classing the reader and/or the writer class. For example:
@@ -164,6 +190,17 @@ and instead leave it to developers to "pipe" the output of this library to other
 such as https://github.com/CesiumGS/gltf-pipeline or https://github.com/zeux/meshoptimizer.
 See [./samples/local-svf-to-gltf.sh](./samples/local-svf-to-gltf.sh) or
 [./samples/remote-svf-to-gltf.sh](./samples/remote-svf-to-gltf.sh) for examples.
+
+### Web viewer
+
+[samples/viewer.html](./samples/viewer.html) is a small three.js viewer for GLB files. Serve it over
+HTTP and point it at a model with the `model` query parameter:
+
+```
+# run this from the directory that contains your .glb file
+python3 -m http.server 8080
+# then open http://localhost:8080/samples/viewer.html?model=./output.glb
+```
 
 ## Development
 
