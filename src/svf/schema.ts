@@ -156,7 +156,7 @@ export interface ILines {
     lcount: number; // Number of line segments
     vertices: Float32Array; // Vertex buffer (of length vcount*3)
     indices: Uint16Array; // Index buffer (of length lcount*2)
-    colors?: Float32Array; // Optional color buffer (of length vcount*3)
+    colors?: Float32Array; // Optional RGBA color buffer (of length vcount*4)
     lineWidth: number;
     bounds: Uint16Array; // Polyline boundary indices
 }
