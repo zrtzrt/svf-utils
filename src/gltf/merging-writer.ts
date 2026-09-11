@@ -1,14 +1,17 @@
 /**
- * MergingGLTFWriter - Writes IMF.IScene to GLB with mesh merging by material.
+ * MergingGLTFWriter - Writes IMF.IScene to GLB with mesh merging.
  *
  * Instead of one mesh per fragment (potentially hundreds of thousands of meshes),
  * this writer:
  * 1. Bakes each fragment's transform into its geometry vertices
- * 2. Groups fragments by material
- * 3. Merges all geometries in the same material group into one mesh
- * 4. Outputs a single GLB file
+ * 2. Groups fragments by an optional per-node tree path plus material
+ * 3. Merges all geometries in the same group into one mesh
+ * 4. Embeds UVs (TEXCOORD_0) and diffuse textures when the source provides them
+ * 5. Names meshes/nodes with the tree path, so viewers can rebuild a
+ *    filterable model tree from the GLB alone
+ * 6. Outputs a single GLB file
  *
- * This drastically reduces draw calls (from N fragments to ~N materials)
+ * This drastically reduces draw calls (from N fragments to ~N groups)
  * and JSON size, making the model web-friendly.
  */
 
@@ -79,38 +82,55 @@ function pad4(n: number): number { return (n + 3) & ~3; }
 
 class MergeGroup {
     materialID: number;
+    treePath: string;
     id: string;
     vertexOffset = 0;
     totalVertices = 0;
     totalIndices = 0;
     hasNormals = false;
+    hasUvs = false;
 
     posPath: string;
     nrmPath: string;
     idxPath: string;
+    uvPath: string;
     posFd: number;
     nrmFd: number;
     idxFd: number;
+    uvFd: number;
 
-    constructor(materialID: number, tempDir: string, id: string) {
+    constructor(materialID: number, tempDir: string, id: string, treePath: string) {
         this.materialID = materialID;
+        this.treePath = treePath;
         this.id = id;
         const prefix = path.join(tempDir, `g${id}`);
         this.posPath = prefix + '_pos.bin';
         this.nrmPath = prefix + '_nrm.bin';
         this.idxPath = prefix + '_idx.bin';
+        this.uvPath = prefix + '_uv.bin';
         this.posFd = fse.openSync(this.posPath, 'w');
         this.nrmFd = fse.openSync(this.nrmPath, 'w');
         this.idxFd = fse.openSync(this.idxPath, 'w');
+        this.uvFd = fse.openSync(this.uvPath, 'w');
     }
 
-    appendMesh(verts: Float32Array, norms: Float32Array | undefined, indices: Uint16Array, matrix: number[]): void {
+    appendMesh(verts: Float32Array, norms: Float32Array | undefined, indices: Uint16Array, matrix: number[], uvs?: Float32Array): void {
         const tVerts = new Float32Array(verts.length);
         for (let i = 0; i < verts.length; i += 3) {
             const [x, y, z] = transformPoint(matrix, verts[i], verts[i+1], verts[i+2]);
             tVerts[i] = x; tVerts[i+1] = y; tVerts[i+2] = z;
         }
         fse.writeSync(this.posFd, Buffer.from(tVerts.buffer));
+
+        // UVs (channel 0). Always write (zero-filled when absent) so vertex
+        // counts stay aligned across all meshes merged into this group.
+        const uvCount = (verts.length / 3) * 2;
+        if (uvs && uvs.length >= uvCount) {
+            fse.writeSync(this.uvFd, Buffer.from(uvs.buffer, uvs.byteOffset, uvCount * 4));
+            this.hasUvs = true;
+        } else {
+            fse.writeSync(this.uvFd, Buffer.alloc(uvCount * 4));
+        }
 
         if (norms) {
             const nm = getNormalMatrix(matrix);
@@ -153,6 +173,7 @@ class MergeGroup {
         fse.closeSync(this.posFd);
         fse.closeSync(this.nrmFd);
         fse.closeSync(this.idxFd);
+        fse.closeSync(this.uvFd);
     }
 }
 
@@ -166,7 +187,6 @@ export interface IMergingWriterOptions {
 }
 
 interface IGroupMeta {
-    matID: number;
     group: MergeGroup;
     isLine: boolean;
     posBvOffset: number;
@@ -175,6 +195,8 @@ interface IGroupMeta {
     nrmBvSize: number;
     idxBvOffset: number;
     idxBvSize: number;
+    uvBvOffset: number;
+    uvBvSize: number;
 }
 
 /**
@@ -214,16 +236,23 @@ export class MergingWriter {
             await this._buildAndWriteGLB(imf, meshGroups, lineGroups, outputGlbPath);
 
         } finally {
-            fse.removeSync(tempDir);
+            // The GLB is already written at this point, so a failed cleanup must
+            // not fail the whole conversion (locked files, bulk-delete guards, ...).
+            try {
+                fse.removeSync(tempDir);
+            } catch (err) {
+                this.options.log(`[warn] could not remove temp dir: ${(err as Error).message}`);
+                this.options.log(`       remove it manually when convenient: ${tempDir}`);
+            }
         }
     }
 
     protected async _collectGeometry(imf: IMF.IScene, tempDir: string): Promise<{
-        meshGroups: Map<number, MergeGroup>;
-        lineGroups: Map<number, MergeGroup>;
+        meshGroups: Map<string, MergeGroup>;
+        lineGroups: Map<string, MergeGroup>;
     }> {
-        const meshGroups = new Map<number, MergeGroup>();
-        const lineGroups = new Map<number, MergeGroup>();
+        const meshGroups = new Map<string, MergeGroup>();
+        const lineGroups = new Map<string, MergeGroup>();
         let meshGid = 0, lineGid = 0;
         const nodeCount = imf.getNodeCount();
         const globalMatrix = this._computeGlobalTransform(imf.getMetadata());
@@ -240,13 +269,24 @@ export class MergingWriter {
             const matrix = multiplyMatrices(globalMatrix, nodeMatrix);
             const matID = fragment.material;
 
+            // Group by an optional per-node tree path (e.g. a BIM
+            // "building|level|category|family|type") plus the material, so the
+            // merged output stays filterable at every level of the model tree.
+            // Nodes without a tree path all land in one shared bucket.
+            const treePath = fragment.treePath || 'Uncategorized';
+            const groupKey = `${treePath}|${matID}`;
+
             if (geometry.kind === IMF.GeometryKind.Mesh) {
-                let group = meshGroups.get(matID);
-                if (!group) { group = new MergeGroup(matID, tempDir, `mesh_${meshGid++}`); meshGroups.set(matID, group); }
-                group.appendMesh(geometry.getVertices(), geometry.getNormals(), geometry.getIndices(), matrix);
+                let group = meshGroups.get(groupKey);
+                if (!group) { group = new MergeGroup(matID, tempDir, `mesh_${meshGid++}`, treePath); meshGroups.set(groupKey, group); }
+                let uvs: Float32Array | undefined;
+                if (geometry.getUvChannelCount() > 0) {
+                    try { uvs = geometry.getUvs(0); } catch { uvs = undefined; }
+                }
+                group.appendMesh(geometry.getVertices(), geometry.getNormals(), geometry.getIndices(), matrix, uvs);
             } else if (geometry.kind === IMF.GeometryKind.Lines) {
-                let group = lineGroups.get(matID);
-                if (!group) { group = new MergeGroup(matID, tempDir, `line_${lineGid++}`); lineGroups.set(matID, group); }
+                let group = lineGroups.get(groupKey);
+                if (!group) { group = new MergeGroup(matID, tempDir, `line_${lineGid++}`, treePath); lineGroups.set(groupKey, group); }
                 group.appendLines(geometry.getVertices(), geometry.getIndices(), matrix);
             }
 
@@ -283,35 +323,39 @@ export class MergingWriter {
 
     protected async _buildAndWriteGLB(
         imf: IMF.IScene,
-        meshGroups: Map<number, MergeGroup>,
-        lineGroups: Map<number, MergeGroup>,
+        meshGroups: Map<string, MergeGroup>,
+        lineGroups: Map<string, MergeGroup>,
         outputGlbPath: string
     ): Promise<void> {
-        // Sort groups deterministically
-        const sortedMesh = [...meshGroups.entries()].sort((a, b) => a[0] - b[0]);
-        const sortedLine = [...lineGroups.entries()].sort((a, b) => a[0] - b[0]);
+        // Sort groups deterministically (keys are "<treePath>|<materialID>")
+        const byKey = (a: [string, MergeGroup], b: [string, MergeGroup]) => a[0].localeCompare(b[0]);
+        const sortedMesh = [...meshGroups.entries()].sort(byKey);
+        const sortedLine = [...lineGroups.entries()].sort(byKey);
         const allEntries = [...sortedMesh, ...sortedLine];
 
         // --- First pass: compute bounds and byte offsets ---
         let binOffset = 0;
+        const unmappedMatIds = new Set<string>(); // diagnostic: material ids that failed to resolve
         const groupMeta: IGroupMeta[] = [];
 
-        for (const [matID, group] of allEntries) {
+        for (const [, group] of allEntries) {
             if (group.totalVertices === 0 || group.totalIndices === 0) continue;
             const isLine = group.id.startsWith('line_');
 
             const posSize = fse.statSync(group.posPath).size;
             const nrmSize = (group.hasNormals && !isLine) ? fse.statSync(group.nrmPath).size : 0;
             const idxSize = fse.statSync(group.idxPath).size;
+            const uvSize = (group.hasUvs && !isLine) ? fse.statSync(group.uvPath).size : 0;
 
             groupMeta.push({
-                matID, group, isLine,
+                group, isLine,
                 posBvOffset: binOffset, posBvSize: posSize,
                 nrmBvOffset: binOffset + pad4(posSize), nrmBvSize: nrmSize,
                 idxBvOffset: binOffset + pad4(posSize) + pad4(nrmSize), idxBvSize: idxSize,
+                uvBvOffset: binOffset + pad4(posSize) + pad4(nrmSize) + pad4(idxSize), uvBvSize: uvSize,
             });
 
-            binOffset += pad4(posSize) + pad4(nrmSize) + pad4(idxSize);
+            binOffset += pad4(posSize) + pad4(nrmSize) + pad4(idxSize) + pad4(uvSize);
         }
 
         // --- Compute bounds for centering (read position data once) ---
@@ -338,11 +382,14 @@ export class MergingWriter {
             buffers: { byteLength: number }[];
             bufferViews: { buffer: number; byteOffset: number; byteLength: number; target?: number }[];
             accessors: { bufferView: number; componentType: number; count: number; type: string; min?: number[]; max?: number[] }[];
-            meshes: { primitives: { mode?: number; attributes: Record<string, number>; indices: number; material?: number }[] }[];
+            meshes: { name?: string; primitives: { mode?: number; attributes: Record<string, number>; indices: number; material?: number }[] }[];
             materials: Record<string, any>[];
             nodes: Record<string, any>[];
             scenes: { nodes: number[] }[];
             scene: number;
+            samplers?: Record<string, any>[];
+            textures?: Record<string, any>[];
+            images?: Record<string, any>[];
         }
 
         const gltf: GlTf = {
@@ -364,18 +411,71 @@ export class MergingWriter {
         }) - 1;
         gltf.scenes[0].nodes.push(rootNodeIdx);
 
-        // Build materials (dedup by properties)
-        const materialMap = new Map<string, { svfID: number; gltfIndex: number }>();
+        // Build materials (dedup by properties).
+        // NOTE: every SVF material id is mapped to a glTF material. Mapping only
+        // the first id of each dedup group leaves most meshes without a material
+        // (they render flat white).
+        const hashToGltfMat = new Map<string, number>();
+        const svfToGltfMat = new Map<number, number>();
+        const uriToTexture = new Map<string, number>(); // diffuse uri -> texture index
+        const imageBlocks: { buffer: Buffer; mimeType: string }[] = []; // appended after all geometry
+
         for (let i = 0; i < imf.getMaterialCount(); i++) {
             const mat = imf.getMaterial(i);
             const hash = this._materialHash(mat);
-            if (!materialMap.has(hash)) {
-                materialMap.set(hash, { svfID: i, gltfIndex: gltf.materials.length });
-                gltf.materials.push(this._createMaterial(mat));
+            let gltfIndex: number;
+            if (hashToGltfMat.has(hash)) {
+                gltfIndex = hashToGltfMat.get(hash)!;
+            } else {
+                gltfIndex = gltf.materials.length;
+                hashToGltfMat.set(hash, gltfIndex);
+                const gltfMat = this._createMaterial(mat);
+
+                // Diffuse texture: the source exposes it as maps.diffuse (a uri)
+                const texUri = mat && mat.maps && mat.maps.diffuse;
+                if (texUri) {
+                    let texIdx = uriToTexture.get(texUri);
+                    if (texIdx === undefined) {
+                        let imgBuf: Buffer | undefined;
+                        try { imgBuf = imf.getImage(texUri); } catch { imgBuf = undefined; }
+                        if (imgBuf && imgBuf.length) {
+                            imageBlocks.push({ buffer: imgBuf, mimeType: this._guessMimeType(texUri) });
+                            texIdx = imageBlocks.length - 1;
+                            uriToTexture.set(texUri, texIdx);
+                        }
+                    }
+                    if (texIdx !== undefined) (gltfMat as Record<string, any>)._texIdx = texIdx;
+                }
+                gltf.materials.push(gltfMat);
             }
+            svfToGltfMat.set(i, gltfIndex);
         }
-        const svfToGltfMat = new Map<number, number>();
-        for (const [, info] of materialMap) svfToGltfMat.set(info.svfID, info.gltfIndex);
+
+        // --- Allocate bufferViews for textures (appended after all geometry) ---
+        let imgOffset = binOffset;
+        if (imageBlocks.length > 0) {
+            gltf.samplers = [{ magFilter: 9729, minFilter: 9987, wrapS: 10497, wrapT: 10497 }];
+            gltf.textures = [];
+            gltf.images = [];
+            imageBlocks.forEach((img, k) => {
+                const bvIdx = gltf.bufferViews.length;
+                gltf.bufferViews.push({ buffer: 0, byteOffset: imgOffset, byteLength: img.buffer.length });
+                imgOffset += pad4(img.buffer.length);
+                gltf.images!.push({ mimeType: img.mimeType, bufferView: bvIdx });
+                gltf.textures!.push({ sampler: 0, source: k });
+            });
+            gltf.buffers[0].byteLength = imgOffset;
+            for (const m of gltf.materials) {
+                if (m._texIdx !== undefined) {
+                    m.pbrMetallicRoughness = m.pbrMetallicRoughness || {};
+                    m.pbrMetallicRoughness.baseColorTexture = { index: m._texIdx };
+                    delete m._texIdx;
+                }
+            }
+            this.options.log(`Textures: embedded ${imageBlocks.length} (${((imgOffset - binOffset) / 1024 / 1024).toFixed(1)} MB)`);
+        } else {
+            this.options.log('Textures: none available from source');
+        }
 
         // Create bufferViews, accessors, meshes, nodes for each group
         for (const gm of groupMeta) {
@@ -404,6 +504,15 @@ export class MergingWriter {
             const idxAccIdx = gltf.accessors.length;
             gltf.accessors.push({ bufferView: idxBvIdx, componentType: 5125, count: gm.group.totalIndices, type: 'SCALAR' });
 
+            // UV accessor (TEXCOORD_0)
+            let uvAccIdx: number | undefined;
+            if (gm.uvBvSize > 0) {
+                const uvBvIdx = gltf.bufferViews.length;
+                gltf.bufferViews.push({ buffer: 0, byteOffset: gm.uvBvOffset, byteLength: gm.uvBvSize, target: 34962 });
+                uvAccIdx = gltf.accessors.length;
+                gltf.accessors.push({ bufferView: uvBvIdx, componentType: 5126, count: gm.group.totalVertices, type: 'VEC2' });
+            }
+
             // Mesh
             const primitive: GlTf['meshes'][0]['primitives'][0] = {
                 mode: gm.isLine ? 1 : 4,
@@ -411,23 +520,47 @@ export class MergingWriter {
                 indices: idxAccIdx,
             };
             if (normAccIdx !== undefined) primitive.attributes.NORMAL = normAccIdx;
-            const gltfMatIdx = svfToGltfMat.get(gm.matID);
+            if (uvAccIdx !== undefined) primitive.attributes.TEXCOORD_0 = uvAccIdx;
+
+            // NOTE: the map key is "<treePath>|<materialID>", so the real material
+            // id must come from the group itself, not from the key.
+            const realMatID = gm.group.materialID;
+            let gltfMatIdx = svfToGltfMat.get(realMatID);
+            if (gltfMatIdx === undefined) {
+                const n = Number(realMatID);
+                if (Number.isInteger(n) && n >= 0 && n < gltf.materials.length) {
+                    gltfMatIdx = n;
+                } else if (realMatID !== undefined && realMatID !== null) {
+                    unmappedMatIds.add(String(realMatID));
+                }
+            }
             if (gltfMatIdx !== undefined) primitive.material = gltfMatIdx;
 
+            // Name both mesh and node with the tree path, so viewers can rebuild
+            // a filterable model tree from the GLB alone.
             const meshIdx = gltf.meshes.length;
-            gltf.meshes.push({ primitives: [primitive] });
+            gltf.meshes.push({ name: gm.group.treePath, primitives: [primitive] });
 
-            const nodeIdx = gltf.nodes.push({ mesh: meshIdx }) - 1;
+            const nodeIdx = gltf.nodes.push({ name: gm.group.treePath, mesh: meshIdx }) - 1;
             (gltf.nodes[rootNodeIdx].children as number[]).push(nodeIdx);
         }
+
+        const matRefCount = gltf.meshes.filter(m => m.primitives[0].material !== undefined).length;
+        this.options.log(
+            `Materials: ${gltf.materials.length} defined, ${matRefCount}/${gltf.meshes.length} meshes with material` +
+            (unmappedMatIds.size
+                ? `; ${unmappedMatIds.size} unmapped id(s), e.g. ${[...unmappedMatIds].slice(0, 5).join(', ')}`
+                : '')
+        );
 
         // --- Write GLB ---
         const jsonStr = JSON.stringify(gltf);
         const jsonBuf = Buffer.from(jsonStr, 'utf8');
         const jsonPaddedLen = pad4(jsonBuf.length);
-        const totalLength = 12 + 8 + jsonPaddedLen + (binOffset > 0 ? 8 + binOffset : 0);
+        const binTotal = imgOffset; // geometry bytes + embedded image bytes
+        const totalLength = 12 + 8 + jsonPaddedLen + (binTotal > 0 ? 8 + binTotal : 0);
 
-        this.options.log(`GLB JSON: ${(jsonPaddedLen/1024).toFixed(0)} KB, BIN: ${(binOffset/1024/1024).toFixed(1)} MB, Total: ${(totalLength/1024/1024).toFixed(1)} MB`);
+        this.options.log(`GLB JSON: ${(jsonPaddedLen/1024).toFixed(0)} KB, BIN: ${(binTotal/1024/1024).toFixed(1)} MB, Total: ${(totalLength/1024/1024).toFixed(1)} MB`);
 
         const out = fse.createWriteStream(outputGlbPath);
 
@@ -448,9 +581,9 @@ export class MergingWriter {
         out.write(jsonPadded);
 
         // BIN chunk
-        if (binOffset > 0) {
+        if (binTotal > 0) {
             const binHeader = Buffer.alloc(8);
-            binHeader.writeUInt32LE(binOffset, 0);
+            binHeader.writeUInt32LE(binTotal, 0);
             binHeader.writeUInt32LE(0x004E4942, 4); // BIN
             out.write(binHeader);
 
@@ -474,6 +607,21 @@ export class MergingWriter {
                 out.write(idxData);
                 const idxPad = pad4(idxData.length) - idxData.length;
                 if (idxPad > 0) out.write(Buffer.alloc(idxPad, 0));
+
+                // UVs
+                if (gm.uvBvSize > 0) {
+                    const uvData = fse.readFileSync(gm.group.uvPath);
+                    out.write(uvData);
+                    const uvPad = pad4(uvData.length) - uvData.length;
+                    if (uvPad > 0) out.write(Buffer.alloc(uvPad, 0));
+                }
+            }
+
+            // Images (textures) - appended after all geometry
+            for (const img of imageBlocks) {
+                out.write(img.buffer);
+                const imgPad = pad4(img.buffer.length) - img.buffer.length;
+                if (imgPad > 0) out.write(Buffer.alloc(imgPad, 0));
             }
         }
 
@@ -507,5 +655,15 @@ export class MergingWriter {
             m.pbrMetallicRoughness.baseColorFactor[3] = mat.opacity;
         }
         return m;
+    }
+
+    protected _guessMimeType(uri: string): string {
+        const s = String(uri).toLowerCase();
+        if (s.endsWith('.png')) return 'image/png';
+        if (s.endsWith('.jpg') || s.endsWith('.jpeg')) return 'image/jpeg';
+        if (s.endsWith('.webp')) return 'image/webp';
+        if (s.endsWith('.bmp')) return 'image/bmp';
+        if (s.endsWith('.gif')) return 'image/gif';
+        return 'image/png';
     }
 }
