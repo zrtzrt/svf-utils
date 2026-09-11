@@ -19,7 +19,7 @@
 const path = require('path');
 const fse = require('fs-extra');
 const axios = require('axios');
-const { SVFReader, MergingGLTFWriter, TwoLeggedAuthenticationProvider } = require('..');
+const { SVFReader, SVF2Reader, MergingGLTFWriter, TwoLeggedAuthenticationProvider } = require('..');
 const { parseMeshes } = require('../lib/svf/meshes');
 const IMF = require('../lib/common/intermediate-format');
 
@@ -137,6 +137,8 @@ function findDerivatives(manifest) {
         if (node.type === 'resource' && node.role === 'graphics') {
             if (node.mime === 'application/autodesk-svf') {
                 results.push({ format: 'svf', guid: node.guid });
+            } else if (node.mime === 'application/autodesk-otg' || node.mime === 'application/autodesk-svf2') {
+                results.push({ format: 'svf2', guid: node.guid });
             }
         }
         if (node.children) node.children.forEach(walk);
@@ -442,7 +444,7 @@ async function cmdConvert(urn, outputDir) {
 
     const derivatives = findDerivatives(manifest);
     if (derivatives.length === 0) {
-        throw new Error('No SVF derivatives found in manifest.');
+        throw new Error('No SVF/SVF2 derivatives found in manifest.');
     }
 
     console.log(`Found ${derivatives.length} derivative(s):`);
@@ -453,6 +455,8 @@ async function cmdConvert(urn, outputDir) {
     for (const derivative of derivatives) {
         if (derivative.format === 'svf') {
             await convertSVF(urn, derivative.guid, authProvider, outputDir);
+        } else if (derivative.format === 'svf2') {
+            await convertSVF2(urn, derivative.guid, authProvider, outputDir);
         }
     }
 }
@@ -481,6 +485,35 @@ async function convertSVF(urn, guid, authProvider, outputDir) {
         console.log(`  Done! Output: ${outputGlb}`);
     } finally {
         fse.removeSync(path.join(outputDir, '.tmp'));
+    }
+}
+
+async function convertSVF2(urn, guid, authProvider, outputDir) {
+    console.log(`\n=== Converting SVF2/OTG (guid: ${guid}) ===`);
+    const reader = await SVF2Reader.FromDerivativeService(urn, authProvider);
+    const views = await reader.listViews();
+
+    // Find the view matching this guid, or convert all views
+    const targetViews = guid ? views.filter(v => v === guid) : views;
+    if (targetViews.length === 0 && views.length > 0) {
+        console.log('  Specific guid not found in views, converting all views.');
+        targetViews.push(...views);
+    }
+
+    for (const viewId of targetViews) {
+        console.log(`  Reading view: ${viewId}...`);
+        const scene = await reader.readView(viewId);
+
+        const outputGlb = path.join(outputDir, `${viewId}.glb`);
+        console.log(`  Writing merged GLB to: ${outputGlb}`);
+
+        const writer = new MergingGLTFWriter({
+            center: true,
+            log: (msg) => console.log(`    [Writer] ${msg}`)
+        });
+        await writer.write(scene, outputGlb);
+
+        console.log(`  Done! Output: ${outputGlb}`);
     }
 }
 

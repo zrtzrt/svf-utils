@@ -767,7 +767,7 @@ export class Writer {
     protected computeIndicesForPolylines(geometry: IMF.ILineGeometry): { indices: Uint16Array, drawMode: number } {
         const bounds = geometry.getBounds();
         if (!bounds || bounds.length === 0) {
-            // No polyline info available in the source format: keep original LINES behaviour
+            // No polyline info available (e.g. SVF2/OTG): keep original LINES behaviour
             return { indices: geometry.getIndices(), drawMode: 1 }; // LINES
         }
         if (bounds.length <= 2) {
