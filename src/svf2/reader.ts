@@ -265,7 +265,10 @@ export class Scene implements IMF.IScene {
                     kind: IMF.GeometryKind.Lines,
                     getIndices: () => geom.indices,
                     getVertices: () => geom.vertices,
-                    getColors: () => undefined
+                    getColors: () => undefined,
+                    // OTG/SVF2 line geometry carries no polyline bounds; return an
+                    // empty array so the writer keeps the default LINES behaviour.
+                    getBounds: () => new Uint16Array()
                 };
                 return lineGeometry;
         }

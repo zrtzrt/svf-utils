@@ -465,7 +465,7 @@ export class Writer {
         }
 
         // Output index buffer
-        const indices = geometry.getIndices();
+        const { indices, drawMode } = this.computeIndicesForPolylines(geometry);
         const indexBufferView = this.createBufferView(Buffer.from(indices.buffer, indices.byteOffset, indices.byteLength));
         const indexBufferViewID = this.addBufferView(indexBufferView);
         const indexAccessor = this.createAccessor(indexBufferViewID, 5123, indexBufferView.byteLength / 2, 'SCALAR');
@@ -491,7 +491,7 @@ export class Writer {
         }
 
         mesh.primitives.push({
-            mode: 1, // LINES
+            mode: drawMode,
             attributes: {
                 POSITION: positionAccessorID
             },
@@ -759,5 +759,34 @@ export class Writer {
             min[2] = Math.min(min[2], array[i + 2]); max[2] = Math.max(max[2], array[i + 2]);
         }
         return { min, max };
+    }
+
+    // Makes polylines render correctly: a single segment is drawn as LINE_STRIP,
+    // while multi-segment polylines get their non-boundary indices doubled so
+    // they can be drawn as independent LINES without cross-connecting segments.
+    protected computeIndicesForPolylines(geometry: IMF.ILineGeometry): { indices: Uint16Array, drawMode: number } {
+        const bounds = geometry.getBounds();
+        if (!bounds || bounds.length === 0) {
+            // No polyline info available (e.g. SVF2/OTG): keep original LINES behaviour
+            return { indices: geometry.getIndices(), drawMode: 1 }; // LINES
+        }
+        if (bounds.length <= 2) {
+            return { indices: geometry.getIndices(), drawMode: 3 }; // LINE_STRIP
+        }
+        const startEndBounds: number[] = [];
+        for (const b of Array.from(bounds)) {
+            startEndBounds.push(b - 1, b);
+        }
+        const oldIndices = geometry.getIndices();
+        const indicesWithBounds: number[] = [];
+        for (let i = 0; i < oldIndices.length; i++) {
+            const indice = oldIndices[i];
+            if (startEndBounds.includes(indice)) {
+                indicesWithBounds.push(indice);
+            } else {
+                indicesWithBounds.push(indice, indice);
+            }
+        }
+        return { indices: Uint16Array.from(indicesWithBounds), drawMode: 1 }; // LINES
     }
 }
