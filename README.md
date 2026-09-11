@@ -9,7 +9,7 @@
 
 ![APS & glTF logos](./logo.png)
 
-*Experimental* utilities for working with [Autodesk Platform Services](https://aps.autodesk.com) SVF/SVF2 file formats.
+*Experimental* utilities for working with [Autodesk Platform Services](https://aps.autodesk.com) SVF files.
 
 ## Usage
 
@@ -76,52 +76,13 @@ set APS_ACCESS_TOKEN=<access token>
 svf-to-gltf <urn> --output-folder <path to output folder>
 ```
 
-#### SVF2
-
-- run the `svf2-to-gltf` command without parameters for usage info
-- run the command with a Model Derivative URN
-    - to access APS you must also specify credentials (`APS_CLIENT_ID` and `APS_CLIENT_SECRET`)
-    or an authentication token (`APS_ACCESS_TOKEN`) as env. variables
-- the command also accepts the following options:
-  - `--center` move the model to origin
-
-On Unix/macOS:
-
-```
-export APS_CLIENT_ID=<client id>
-export APS_CLIENT_SECRET=<client secret>
-svf2-to-gltf <urn> <path/to/output/folder>
-```
-
-or
-
-```
-export APS_ACCESS_TOKEN=<access token>
-svf2-to-gltf <urn> <path/to/output/folder>
-```
-
-On Windows:
-
-```
-set APS_CLIENT_ID=<client id>
-set APS_CLIENT_SECRET=<client secret>
-svf2-to-gltf <urn> <path\to\output\folder>
-```
-
-or
-
-```
-set APS_ACCESS_TOKEN=<access token>
-svf2-to-gltf <urn> <path\to\output\folder>
-```
-
 ### Node.js
 
 The library can be used at different levels of granularity.
 
-The easiest way to convert an SVF file is to read the entire model into memory using `SVFReader#read`/`SVF2Reader#read` methods, and save the model into glTF using `GLTFWriter#write`. See [samples/remote-svf-to-gltf.js](./samples/remote-svf-to-gltf.js) and [samples/remote-svf2-to-gltf.js](./samples/remote-svf2-to-gltf.js).
+The easiest way to convert an SVF file is to read the entire model into memory using the `SVFReader#read` method, and save the model into glTF using `GLTFWriter#write`. See [samples/remote-svf-to-gltf.js](./samples/remote-svf-to-gltf.js).
 
-If you don't want to read the entire model into memory (for example, when distributing the parsing of an SVF over multiple servers), you can use methods like `SVFReader#enumerateFragments`/`SVF2Reader#enumerateFragments` or `SVFReader#enumerateGeometries`/`SVF2Reader#enumerateGeometries` to _asynchronously_ iterate over individual elements:
+If you don't want to read the entire model into memory (for example, when distributing the parsing of an SVF over multiple servers), you can use methods like `SVFReader#enumerateFragments` or `SVFReader#enumerateGeometries` to _asynchronously_ iterate over individual elements:
 
 ```js
 const { SVFReader } = require('svf-utils');
@@ -134,7 +95,7 @@ for await (const fragment of reader.enumerateFragments()) {
 }
 ```
 
-And finally, if you already have the individual SVF/SVF2 assets in memory, you can parse the binary data directly using _synchronous_ iterators like `parseMeshes`:
+And finally, if you already have the individual SVF assets in memory, you can parse the binary data directly using _synchronous_ iterators like `parseMeshes`:
 
 ```js
 const { parseMeshes } = require('svf-utils/lib/svf/meshes');
