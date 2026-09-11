@@ -148,12 +148,39 @@ for (const mesh of parseMeshes(buffer)) {
 
 > For additional examples, see the [samples](./samples) subfolder.
 
+### MergingGLTFWriter
+
+When converting large models (e.g., BIM models with hundreds of thousands of fragments), the standard `GLTFWriter` creates one mesh per fragment, leading to enormous output files and excessive draw calls. The `MergingGLTFWriter` solves this by:
+
+1. **Baking transforms** into vertex positions/normals (eliminating per-node transform overhead)
+2. **Merging meshes by material** — all fragments sharing the same material become a single draw call
+3. **Outputting a single GLB file** — compact binary format, no external .bin files
+
+This can reduce output from 1.4 GB (288K meshes) to ~100 MB (after Draco compression) for large models.
+
+```js
+const { MergingGLTFWriter } = require('svf-utils');
+
+const writer = new MergingGLTFWriter({
+    center: true,        // Move model to origin (default: true)
+    log: console.log     // Optional logging
+});
+await writer.write(scene, 'output.glb');
+```
+
+For best results, apply Draco compression to the output GLB using the `draco-compress` tool:
+
+```
+node tools/draco-compress.js output.glb output-draco.glb
+```
+
 ### Customization
 
 You can customize the translation by sub-classing the reader and/or the writer class. For example:
 
 - [samples/custom-gltf-attribute.js](samples/custom-gltf-attribute.js) adds the dbID of each SVF node as a new attribute in its mesh
 - [samples/filter-by-area.js](samples/filter-by-area.js) only outputs geometries that are completely contained within a specified area
+- [samples/aps-to-gltf.js](samples/aps-to-gltf.js) full pipeline: upload → translate → convert to merged GLB with lazy-loading
 
 ### Metadata
 
@@ -186,8 +213,24 @@ WHERE propName = "Material" AND propValue LIKE "%Concrete%"
 
 ### GLB, Draco, and other post-processing
 
-Following the Unix philosophy, we removed post-processing dependencies from this project, and instead leave it to developers to "pipe" the output of this library to other tools such as https://github.com/CesiumGS/gltf-pipeline or https://github.com/zeux/meshoptimizer. See [./samples/local-svf-to-gltf.sh](./samples/local-svf-to-gltf.sh) or
+The `MergingGLTFWriter` outputs GLB directly, and the `tools/draco-compress.js` script can apply Draco compression, deduplication, and quantization in one pass:
+
+```
+node tools/draco-compress.js <input.glb> <output.glb>
+```
+
+For other post-processing tasks, you can also "pipe" the output to tools like https://github.com/CesiumGS/gltf-pipeline or https://github.com/zeux/meshoptimizer. See [./samples/local-svf-to-gltf.sh](./samples/local-svf-to-gltf.sh) or
 [./samples/remote-svf-to-gltf.sh](./samples/remote-svf-to-gltf.sh) for examples.
+
+### Web Viewer
+
+A simple Three.js-based viewer for GLB files (with Draco support) is included at [samples/viewer.html](samples/viewer.html). Serve it with any HTTP server and open in a browser:
+
+```
+# From the directory containing your .glb file:
+python3 -m http.server 8080
+# Open http://localhost:8080/samples/viewer.html?model=./output.glb
+```
 
 ## Development
 
