@@ -2,19 +2,19 @@ import { posix } from 'node:path';
 import { z } from 'zod';
 
 const PrivatePDBSchema = z.object({
-    avs: z.string(),
-    offsets: z.string(),
-    dbid: z.string()
+    avs: z.string().optional(),
+    offsets: z.string().optional(),
+    dbid: z.string().optional()
 });
 
 const SharedPDBSchema = z.object({
-    attrs: z.string(),
-    values: z.string(),
-    ids: z.string()
+    attrs: z.string().optional(),
+    values: z.string().optional(),
+    ids: z.string().optional()
 });
 
 const PrivateAssetsSchema = z.object({
-    pdb: PrivatePDBSchema,
+    pdb: PrivatePDBSchema.optional(),
     fragments: z.string(),
     fragments_extra: z.string(),
     materials_ptrs: z.string().optional(),
@@ -23,7 +23,7 @@ const PrivateAssetsSchema = z.object({
 });
 
 const SharedAssetsSchema = z.object({
-    pdb: SharedPDBSchema,
+    pdb: SharedPDBSchema.optional(),
     geometry: z.string(),
     materials: z.string(),
     textures: z.string(),

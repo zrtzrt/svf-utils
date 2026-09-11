@@ -251,15 +251,19 @@ export class Downloader {
                 await fse.writeFile(filePath, buffer);
             }
         };
-        const { avs, dbid, offsets } = view.manifest.assets.pdb;
-        const { attrs, ids, values } = view.manifest.shared_assets.pdb;
-        await Promise.all([
-            write(avs),
-            write(dbid),
-            write(offsets),
-            write(attrs),
-            write(ids),
-            write(values),
-        ]);
+        const privatePdb = view.manifest.assets.pdb;
+        const sharedPdb = view.manifest.shared_assets.pdb;
+        if (privatePdb && sharedPdb) {
+            const { avs, dbid, offsets } = privatePdb;
+            const { attrs, ids, values } = sharedPdb;
+            await Promise.all([
+                write(avs),
+                write(dbid),
+                write(offsets),
+                write(attrs),
+                write(ids),
+                write(values),
+            ]);
+        }
     }
 }
