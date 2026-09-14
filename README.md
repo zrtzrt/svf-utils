@@ -168,6 +168,14 @@ const writer = new MergingGLTFWriter({
 await writer.write(scene, 'output.glb');
 ```
 
+Each mesh and node is named with the tree path of the fragments it merges (`<level>|<category>|<family>|<type>`,
+or `Uncategorized`), so a viewer can rebuild a filterable model tree from the GLB alone. The same path is
+repeated in `extras.path`, because three.js `GLTFLoader` sanitizes node and mesh names - spaces become
+underscores and `[ ] . : /` are stripped - which would otherwise break lookups by path for anything derived
+from a filename such as _model.nwc_. `GLTFLoader` copies `extras` verbatim into `object.userData`.
+
+Because the output is a plain GLB, it can be passed on to any external post-processing tool.
+
 For best results, apply Draco compression to the output GLB using the `draco-compress` tool:
 
 ```

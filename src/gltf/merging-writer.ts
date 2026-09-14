@@ -382,7 +382,7 @@ export class MergingWriter {
             buffers: { byteLength: number }[];
             bufferViews: { buffer: number; byteOffset: number; byteLength: number; target?: number }[];
             accessors: { bufferView: number; componentType: number; count: number; type: string; min?: number[]; max?: number[] }[];
-            meshes: { name?: string; primitives: { mode?: number; attributes: Record<string, number>; indices: number; material?: number }[] }[];
+            meshes: { name?: string; primitives: { mode?: number; attributes: Record<string, number>; indices: number; material?: number }[]; extras?: Record<string, any> }[];
             materials: Record<string, any>[];
             nodes: Record<string, any>[];
             scenes: { nodes: number[] }[];
@@ -537,11 +537,18 @@ export class MergingWriter {
             if (gltfMatIdx !== undefined) primitive.material = gltfMatIdx;
 
             // Name both mesh and node with the tree path, so viewers can rebuild
-            // a filterable model tree from the GLB alone.
+            // a filterable model tree from the GLB alone. The name alone is not
+            // reliable though: three.js GLTFLoader sanitizes node/mesh names
+            // (spaces become underscores, `[ ] . : /` are stripped), so paths
+            // containing any of those characters no longer match. The raw path
+            // therefore travels in `extras.path` as well - GLTFLoader copies
+            // `extras` into `object.userData` verbatim.
+            const treeName = gm.group.treePath;
+            const extras = { path: treeName };
             const meshIdx = gltf.meshes.length;
-            gltf.meshes.push({ name: gm.group.treePath, primitives: [primitive] });
+            gltf.meshes.push({ name: treeName, primitives: [primitive], extras });
 
-            const nodeIdx = gltf.nodes.push({ name: gm.group.treePath, mesh: meshIdx }) - 1;
+            const nodeIdx = gltf.nodes.push({ name: treeName, mesh: meshIdx, extras }) - 1;
             (gltf.nodes[rootNodeIdx].children as number[]).push(nodeIdx);
         }
 
