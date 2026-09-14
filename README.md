@@ -31,6 +31,8 @@ Utilities for converting [Autodesk Platform Services](https://aps.autodesk.com) 
   - `--ignore-lines` to exclude line geometry from the output
   - `--ignore-points` to exclude point geometry from the output
   - `--center` move the model to origin
+  - `--merging` to merge fragments into a single GLB, one mesh per tree path and material
+  - `--tree-paths <file>` to group and name the merged output by BIM tree path (see _samples/build-tree-paths.js_)
 
 #### Unix/macOS
 
@@ -146,6 +148,28 @@ underscores and `[ ] . : /` are stripped - which would otherwise break lookups b
 from a filename such as _model.nwc_. `GLTFLoader` copies `extras` verbatim into `object.userData`.
 
 Because the output is a plain GLB, it can be passed on to any external post-processing tool.
+
+#### From the command line
+
+By default the `svf-to-gltf` command runs `GltfWriter`, which writes a `.gltf` + `.bin` pair per view.
+With `--merging` it runs `MergingGLTFWriter` instead and writes a single `<guid>.glb`:
+
+```
+svf-to-gltf <urn> <guid> --merging --output-folder <path to output folder>
+```
+
+Add `--tree-paths` to group and name the merged meshes by BIM tree path; the file it reads is produced
+by _samples/build-tree-paths.js_, which derives a dbID to path mapping from the object hierarchy that
+the Model Derivative properties endpoint exposes:
+
+```
+node samples/build-tree-paths.js <urn> -o tree-paths.json
+svf-to-gltf <urn> <guid> --merging --tree-paths tree-paths.json
+```
+
+Without `--tree-paths` the whole model lands in a single `Uncategorized` group. What counts as a level
+of the tree path is model-specific, so _samples/build-tree-paths.js_ is meant to be adapted (the depth
+is configurable with `-d`, and synthetic containers are dropped).
 
 ### Customization
 
